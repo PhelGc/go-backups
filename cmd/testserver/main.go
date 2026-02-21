@@ -7,11 +7,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func main() {
-	dir := "backups-server"
-	os.MkdirAll(dir, 0750)
+	baseDir := "backups-server"
+	os.MkdirAll(baseDir, 0750)
 
 	http.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -25,6 +26,11 @@ func main() {
 			return
 		}
 
+		// Leer campos de metadata (opcionales)
+		client := strings.TrimSpace(r.FormValue("client"))
+		database := strings.TrimSpace(r.FormValue("database"))
+		jobName := strings.TrimSpace(r.FormValue("job_name"))
+
 		file, header, err := r.FormFile("backup_file")
 		if err != nil {
 			http.Error(w, "campo backup_file no encontrado: "+err.Error(), http.StatusBadRequest)
@@ -32,7 +38,24 @@ func main() {
 		}
 		defer file.Close()
 
-		dst := filepath.Join(dir, header.Filename)
+		// Construir ruta de destino:
+		// Con metadata:    backups-server/{client}/{database}/filename
+		// Sin metadata:    backups-server/filename  (comportamiento anterior)
+		var destDir string
+		if client != "" && database != "" {
+			destDir = filepath.Join(baseDir, sanitize(client), sanitize(database))
+		} else if client != "" {
+			destDir = filepath.Join(baseDir, sanitize(client))
+		} else {
+			destDir = baseDir
+		}
+
+		if err := os.MkdirAll(destDir, 0750); err != nil {
+			http.Error(w, "no se pudo crear directorio: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		dst := filepath.Join(destDir, header.Filename)
 		out, err := os.Create(dst)
 		if err != nil {
 			http.Error(w, "no se pudo crear archivo: "+err.Error(), http.StatusInternalServerError)
@@ -46,8 +69,13 @@ func main() {
 			return
 		}
 
-		msg := fmt.Sprintf(`{"status":"ok","file":"%s","bytes":%d}`, header.Filename, n)
-		log.Printf("recibido: %s (%.2f KB)", header.Filename, float64(n)/1024)
+		log.Printf("recibido: client=%q db=%q job=%q file=%s (%.2f KB)",
+			client, database, jobName, header.Filename, float64(n)/1024)
+
+		msg := fmt.Sprintf(
+			`{"status":"ok","file":"%s","path":"%s","bytes":%d}`,
+			header.Filename, filepath.ToSlash(dst), n,
+		)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(msg))
@@ -55,6 +83,21 @@ func main() {
 
 	log.Println("servidor escuchando en http://localhost:8080")
 	log.Println("endpoint: POST http://localhost:8080/upload  (campo: backup_file)")
-	log.Println("archivos guardados en:", dir)
+	log.Printf("estructura de carpetas: %s/{client}/{database}/archivo\n", baseDir)
 	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+// sanitize elimina caracteres peligrosos de un nombre de directorio.
+// Solo permite letras, números, guiones y guiones bajos.
+func sanitize(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
 }

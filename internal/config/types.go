@@ -9,6 +9,7 @@ type Config struct {
 // JobConfig defines one complete backup job.
 type JobConfig struct {
 	Name        string         `yaml:"name"`
+	Client      string         `yaml:"client,omitempty"` // nombre del cliente, usado para organizar carpetas en el servidor
 	Schedule    string         `yaml:"schedule"`
 	Database    DBConfig       `yaml:"database"`
 	Compression CompressConfig `yaml:"compression"`
@@ -25,8 +26,8 @@ type DBConfig struct {
 	Port      int      `yaml:"port"`
 	User      string   `yaml:"user"`
 	Password  string   `yaml:"password"`
-	Database  string   `yaml:"database,omitempty"`   // single DB (backward compat)
-	Databases []string `yaml:"databases,omitempty"`  // multiple DBs
+	Database  string   `yaml:"database,omitempty"`  // single DB (backward compat)
+	Databases []string `yaml:"databases,omitempty"` // multiple DBs
 	Flags     []string `yaml:"flags,omitempty"`
 }
 

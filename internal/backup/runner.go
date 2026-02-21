@@ -142,7 +142,11 @@ func (r *Runner) runStaged(ctx context.Context) error {
 			"job", r.job.Name, "db", dbName, "file", stagedPath, "bytes", bytes)
 
 		// Fase 2: upload con reintentos
-		uploader := storage.NewHTTP(stageCfg)
+		uploader := storage.NewHTTPWithMeta(stageCfg, storage.BackupMeta{
+			Client:   r.job.Client,
+			Database: dbName,
+			JobName:  r.job.Name,
+		})
 		var uploadErr error
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			if attempt > 1 {
@@ -199,10 +203,21 @@ func (r *Runner) runOneDB(ctx context.Context, dbName string) (int64, string, er
 	if err != nil {
 		return 0, "", fmt.Errorf("build compressor: %w", err)
 	}
-	store, err := storage.New(r.job.Storage)
-	if err != nil {
-		return 0, "", fmt.Errorf("build storage: %w", err)
+
+	var store storage.Writer
+	if r.job.Storage.Kind == "http" && r.job.Storage.HTTP != nil {
+		store = storage.NewHTTPWithMeta(r.job.Storage.HTTP, storage.BackupMeta{
+			Client:   r.job.Client,
+			Database: dbName,
+			JobName:  r.job.Name,
+		})
+	} else {
+		store, err = storage.New(r.job.Storage)
+		if err != nil {
+			return 0, "", fmt.Errorf("build storage: %w", err)
+		}
 	}
+
 	pipeline := NewPipeline(r.job.Name, dbName, dumper, compressor, store)
 	return pipeline.Run(ctx)
 }
