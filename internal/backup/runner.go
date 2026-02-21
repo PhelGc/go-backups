@@ -107,6 +107,11 @@ func (r *Runner) runStaged(ctx context.Context) error {
 		maxAttempts = 1
 	}
 
+	// Limpiar archivos staged viejos antes de empezar
+	if stageCfg.StageMaxAgeHours > 0 {
+		r.cleanStagedFiles(stageCfg.StagePath, stageCfg.StageMaxAgeHours)
+	}
+
 	var lastErr error
 	for _, dbName := range r.job.Database.DatabaseList() {
 		// Fase 1: dump a local
@@ -284,4 +289,38 @@ func backoffDelay(baseSeconds, attempt int) time.Duration {
 		seconds = 600
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+// cleanStagedFiles elimina archivos del stage_path con más de maxAgeHours horas.
+// Solo borra archivos (no subdirectorios). Los errores se loguean pero no detienen el backup.
+func (r *Runner) cleanStagedFiles(stagePath string, maxAgeHours int) {
+	cutoff := time.Now().Add(-time.Duration(maxAgeHours) * time.Hour)
+
+	entries, err := os.ReadDir(stagePath)
+	if err != nil {
+		r.logger.Warn("cleanStaged: no se pudo leer directorio",
+			"path", stagePath, "error", err)
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			fullPath := filepath.Join(stagePath, entry.Name())
+			if err := os.Remove(fullPath); err != nil {
+				r.logger.Warn("cleanStaged: no se pudo borrar archivo viejo",
+					"file", fullPath, "error", err)
+			} else {
+				r.logger.Info("cleanStaged: archivo viejo eliminado",
+					"file", fullPath,
+					"age_hours", int(time.Since(info.ModTime()).Hours()))
+			}
+		}
+	}
 }

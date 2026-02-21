@@ -72,6 +72,11 @@ type HTTPConfig struct {
 	// reintenta el upload sin volver a correr mysqldump.
 	// El archivo se elimina automaticamente al subir con exito.
 	StagePath string `yaml:"stage_path,omitempty"`
+	// StageMaxAgeHours: si se configura, al inicio de cada run se eliminan
+	// los archivos del stage_path con mas de este numero de horas.
+	// Evita que el disco se llene si el servidor de destino esta caido por dias.
+	// 0 = sin limpieza automatica.
+	StageMaxAgeHours int `yaml:"stage_max_age_hours,omitempty"`
 }
 
 // NotifyConfig configures webhook notifications.
