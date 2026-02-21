@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+*.bat
 /gobackups
 /testserver
 /testserver-linux
@@ -16,6 +17,7 @@ backups-server/
 # Configs con credenciales reales (solo subir el example)
 config/test-*.yaml
 !config/example.yaml
+all-dbs.yaml
 
 # Variables de entorno
 .env

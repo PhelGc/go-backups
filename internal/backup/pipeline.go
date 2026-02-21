@@ -16,15 +16,17 @@ import (
 // No full-file buffering occurs at any stage.
 type Pipeline struct {
 	jobName    string
+	dbName     string // included in filename: jobname_dbname_timestamp.sql.gz
 	dumper     database.Dumper
 	compressor compress.Compressor
 	store      storage.Writer
 }
 
 // NewPipeline creates a Pipeline for the given job components.
-func NewPipeline(jobName string, dumper database.Dumper, compressor compress.Compressor, store storage.Writer) *Pipeline {
+func NewPipeline(jobName, dbName string, dumper database.Dumper, compressor compress.Compressor, store storage.Writer) *Pipeline {
 	return &Pipeline{
 		jobName:    jobName,
+		dbName:     dbName,
 		dumper:     dumper,
 		compressor: compressor,
 		store:      store,
@@ -32,17 +34,7 @@ func NewPipeline(jobName string, dumper database.Dumper, compressor compress.Com
 }
 
 // Run executes the backup pipeline.
-// Returns the number of compressed bytes written to storage, the filename
-// used, and any error.
-//
-// Concurrency model:
-//
-//	goroutine A: reads from mysqldump stdout, compresses, writes to pw (io.PipeWriter)
-//	main goroutine: storage.Store drains pr (io.PipeReader) and persists bytes
-//
-// Back-pressure is automatic via io.Pipe: if storage is slow, the pipe blocks
-// the compressor which blocks mysqldump. Memory usage stays constant regardless
-// of database size.
+// Returns compressed bytes written, filename used, and any error.
 func (p *Pipeline) Run(ctx context.Context) (bytesWritten int64, filename string, err error) {
 	filename = p.buildFilename()
 
@@ -51,13 +43,10 @@ func (p *Pipeline) Run(ctx context.Context) (bytesWritten int64, filename string
 		return 0, "", fmt.Errorf("start dump: %w", err)
 	}
 
-	// pr/pw bridge the compressor (writer side) and storage (reader side).
 	pr, pw := io.Pipe()
 
-	// Goroutine A: read from dump -> compress -> write to pw.
 	compressErrCh := make(chan error, 1)
 	go func() {
-		// Always close the subprocess reader when done.
 		defer dumpReader.Close()
 
 		cw, err := p.compressor.Wrap(pw)
@@ -68,28 +57,23 @@ func (p *Pipeline) Run(ctx context.Context) (bytesWritten int64, filename string
 		}
 
 		_, copyErr := io.Copy(cw, dumpReader)
-		// Always attempt to flush the compressor's internal buffers.
 		closeErr := cw.Close()
 
 		combined := copyErr
 		if combined == nil {
 			combined = closeErr
 		}
-		// Closing pw with nil causes a clean EOF on pr; an error propagates.
 		pw.CloseWithError(combined)
 		compressErrCh <- combined
 	}()
 
-	// Main goroutine: storage drains pr.
 	cr := &countingReader{r: pr}
 	storeErr := p.store.Store(ctx, filename, cr)
 
 	if storeErr != nil {
-		// Signal goroutine A to stop writing (next pw.Write returns storeErr).
 		pr.CloseWithError(storeErr)
 	}
 
-	// Always wait for goroutine A to finish before returning.
 	compressErr := <-compressErrCh
 
 	if storeErr != nil {
@@ -104,15 +88,15 @@ func (p *Pipeline) Run(ctx context.Context) (bytesWritten int64, filename string
 
 func (p *Pipeline) buildFilename() string {
 	ts := time.Now().UTC().Format("20060102T150405Z")
-	return fmt.Sprintf("%s_%s%s%s",
+	return fmt.Sprintf("%s_%s_%s%s%s",
 		p.jobName,
+		p.dbName,
 		ts,
 		p.dumper.FileExtension(),
 		p.compressor.FileExtension(),
 	)
 }
 
-// countingReader wraps a reader and counts the bytes passing through.
 type countingReader struct {
 	r io.Reader
 	n int64

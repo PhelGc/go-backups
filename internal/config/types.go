@@ -18,13 +18,28 @@ type JobConfig struct {
 }
 
 // DBConfig holds MySQL/MariaDB connection details.
+// Use 'database' for a single schema or 'databases' for multiple.
+// If both are set, 'databases' takes precedence.
 type DBConfig struct {
-	Host     string   `yaml:"host"`
-	Port     int      `yaml:"port"`
-	User     string   `yaml:"user"`
-	Password string   `yaml:"password"`
-	Database string   `yaml:"database"`
-	Flags    []string `yaml:"flags,omitempty"`
+	Host      string   `yaml:"host"`
+	Port      int      `yaml:"port"`
+	User      string   `yaml:"user"`
+	Password  string   `yaml:"password"`
+	Database  string   `yaml:"database,omitempty"`   // single DB (backward compat)
+	Databases []string `yaml:"databases,omitempty"`  // multiple DBs
+	Flags     []string `yaml:"flags,omitempty"`
+}
+
+// DatabaseList returns the list of databases to back up.
+// Uses 'databases' if set, otherwise falls back to 'database'.
+func (d DBConfig) DatabaseList() []string {
+	if len(d.Databases) > 0 {
+		return d.Databases
+	}
+	if d.Database != "" {
+		return []string{d.Database}
+	}
+	return nil
 }
 
 // CompressConfig selects and configures a compressor.
@@ -35,7 +50,7 @@ type CompressConfig struct {
 
 // StorageConfig selects and configures a storage backend.
 type StorageConfig struct {
-	Kind  string      `yaml:"kind"`
+	Kind  string       `yaml:"kind"`
 	Local *LocalConfig `yaml:"local,omitempty"`
 	HTTP  *HTTPConfig  `yaml:"http,omitempty"`
 }

@@ -76,8 +76,8 @@ func validateDB(prefix string, db DBConfig) error {
 	if db.User == "" {
 		return fmt.Errorf("%s: database.user is required", prefix)
 	}
-	if db.Database == "" {
-		return fmt.Errorf("%s: database.database is required", prefix)
+	if db.Database == "" && len(db.Databases) == 0 {
+		return fmt.Errorf("%s: specify 'database' (single) or 'databases' (multiple)", prefix)
 	}
 	return nil
 }

@@ -12,16 +12,24 @@ import (
 	"gobackups/internal/config"
 )
 
+// DBResult es el resultado del backup de una base de datos individual.
+type DBResult struct {
+	Database string `json:"database"`
+	File     string `json:"file"`
+	Bytes    int64  `json:"bytes"`
+	Error    string `json:"error,omitempty"`
+}
+
 // Result carries the outcome of a single backup job execution.
 type Result struct {
-	JobName      string    `json:"job_name"`
-	Status       string    `json:"status"`        // "success" or "failure"
-	StartedAt    time.Time `json:"started_at"`
-	FinishedAt   time.Time `json:"finished_at"`
-	DurationMs   int64     `json:"duration_ms"`
-	BytesWritten int64     `json:"bytes_written"`
-	Destination  string    `json:"destination"`
-	Error        string    `json:"error,omitempty"`
+	JobName      string     `json:"job_name"`
+	Status       string     `json:"status"`         // "success" o "failure"
+	StartedAt    time.Time  `json:"started_at"`
+	FinishedAt   time.Time  `json:"finished_at"`
+	DurationMs   int64      `json:"duration_ms"`
+	TotalBytes   int64      `json:"total_bytes"`
+	Databases    []DBResult `json:"databases"`       // detalle por DB
+	Error        string     `json:"error,omitempty"` // error global si aplica
 }
 
 // Notifier sends a notification after a backup completes or fails.
@@ -64,7 +72,7 @@ func (n *WebhookNotifier) Notify(ctx context.Context, result Result) error {
 		return fmt.Errorf("send webhook: %w", err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body) // drain to allow connection reuse
+	io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("webhook returned status %d", resp.StatusCode)
