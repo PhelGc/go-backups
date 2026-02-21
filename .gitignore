@@ -1,0 +1,36 @@
+# Binarios compilados
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/gobackups
+/testserver
+/testserver-linux
+
+# Directorios de backups (nunca subir datos reales)
+backups/
+backups-staged/
+backups-server/
+
+# Configs con credenciales reales (solo subir el example)
+config/test-*.yaml
+!config/example.yaml
+
+# Variables de entorno
+.env
+.env.*
+
+# Go
+go.sum
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
