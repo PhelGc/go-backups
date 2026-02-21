@@ -31,6 +31,7 @@ go.sum
 .idea/
 *.swp
 *.swo
+*-cwd
 
 # OS
 .DS_Store
