@@ -1,76 +1,90 @@
 # GoBackups
 
-Herramienta CLI en Go para realizar backups de bases de datos MySQL/MariaDB de hasta 100 GB. Diseñada para no bloquear la base de datos, comprimir en streaming sin cargar el archivo en RAM, y ser extensible para múltiples destinos de almacenamiento.
+Herramienta CLI en Go para realizar backups de bases de datos MySQL/MariaDB. Diseñada para no bloquear la base de datos, comprimir en streaming sin cargar el archivo completo en RAM, y enviar los backups a un servidor propio con organizacion por cliente y base de datos.
 
 ---
 
-## Características
+## Caracteristicas
 
-- Backup sin bloqueo via `--single-transaction` (MVCC de InnoDB, compatible con tablas particionadas)
+- Backup sin bloqueo via `--single-transaction` (MVCC de InnoDB)
 - Compresion en streaming: gzip o zstd, sin buffering del archivo completo
+- Multiples bases de datos por job: cada una genera su propio archivo
 - Almacenamiento local (escritura atomica) o HTTP multipart upload al servidor propio
+- Organizacion de carpetas en el servidor: `{cliente}/{base_de_datos}/archivo`
+- Modo staged: dump a disco local primero, upload con reintentos sin repetir el dump
+- Limpieza automatica de archivos staged viejos
 - Reintentos con backoff exponencial
-- Notificacion via webhook POST JSON al completar o fallar
+- Notificacion via webhook POST JSON al completar o fallar, con detalle por base de datos
 - Programacion tipo cron con modo daemon
 - Cancelacion limpia via SIGINT / SIGTERM
-- Contraseña pasada via `MYSQL_PWD` (no visible en listado de procesos)
+- Contrasena pasada via `MYSQL_PWD` (no visible en listado de procesos)
 
 ---
 
 ## Requisitos
 
 - Go 1.22 o superior
-- `mysqldump` disponible en el PATH (incluido en MySQL Community Server o MySQL Workbench)
+- `mysqldump` disponible en el PATH
 
 ---
 
-## Instalacion
+## Build
 
-```bash
-git clone https://github.com/tu-usuario/gobackups
-cd gobackups
-go build -o gobackups ./cmd/gobackups
+```bat
+build.bat
 ```
 
-En Windows:
+Genera los tres binarios sin simbolos de debug (`-s -w`):
 
-```bash
-go build -o gobackups.exe ./cmd/gobackups
-```
+| Binario | Descripcion |
+|---------|-------------|
+| `gobackups.exe` | Cliente: ejecuta los backups |
+| `backupserver.exe` | Servidor: recibe y almacena los backups |
+| `webhookserver.exe` | Servidor de prueba para notificaciones webhook |
 
 ---
 
-## Configuracion
+## gobackups (cliente)
+
+### Configuracion
 
 La configuracion se define en un archivo YAML. Ver [config/example.yaml](config/example.yaml) para un ejemplo completo.
-
-### Estructura basica
 
 ```yaml
 version: "1"
 
 jobs:
-  - name: mi-backup
-    schedule: "0 2 * * *"   # cron de 5 campos: min hora dia mes diaSemana
+  - name: full-backup
+    client: nombre-cliente          # opcional: organiza carpetas en el servidor
+    schedule: "0 2 * * *"
 
     database:
       host: 127.0.0.1
       port: 3306
       user: backup_user
-      password: "${MYSQL_BACKUP_PASSWORD}"   # variable de entorno
-      database: nombre_base_de_datos
+      password: "${MYSQL_BACKUP_PASSWORD}"
+      databases:                    # multiples bases de datos
+        - produccion
+        - analytics
+        - reportes
 
     compression:
       kind: zstd    # "gzip" o "zstd"
       level: 3
 
     storage:
-      kind: local   # "local" o "http"
-      local:
-        path: /var/backups/mysql
+      kind: http
+      http:
+        url: http://tu-servidor:8080/upload
+        field_name: backup_file
+        timeout_seconds: 3600
+        headers:
+          X-Api-Key: "${BACKUP_API_KEY}"
+        stage_path: C:\backups\staged       # dump local antes de subir
+        stage_max_age_hours: 48             # limpiar staged files con mas de 48h
 
     notify:
-      webhook_url: https://hooks.example.com/notify
+      webhook_url: https://hooks.ejemplo.com/notify
       headers:
         Authorization: "Bearer ${NOTIFY_TOKEN}"
 
@@ -79,170 +93,167 @@ jobs:
       delay_seconds: 30
 ```
 
-### Variables de entorno
+**Campos de `database`:**
 
-Las referencias `${VAR}` en el YAML se expanden con las variables de entorno del proceso antes de parsear el archivo. Util para contraseñas y tokens.
+| Campo | Descripcion |
+|-------|-------------|
+| `database` | Una sola base de datos (compatibilidad) |
+| `databases` | Lista de bases de datos; si se especifica, tiene prioridad |
+| `flags` | Flags extra para mysqldump (ej: `--no-tablespaces`) |
+
+**Campos de `storage.http`:**
+
+| Campo | Descripcion |
+|-------|-------------|
+| `url` | Endpoint del servidor |
+| `field_name` | Nombre del campo multipart (normalmente `backup_file`) |
+| `headers` | Headers HTTP adicionales (API keys, tokens) |
+| `stage_path` | Si se configura, el dump se escribe aqui primero y luego se sube. Si el upload falla, solo se reintenta el upload sin repetir el dump |
+| `stage_max_age_hours` | Elimina archivos del stage_path con mas de N horas al inicio de cada run. 0 = desactivado |
 
 ### Compresion
 
 | Kind | Extension | Descripcion |
 |------|-----------|-------------|
 | `gzip` | `.sql.gz` | Estandar, ampliamente compatible |
-| `zstd` | `.sql.zst` | Mas rapido y mejor ratio; recomendado para bases grandes |
+| `zstd` | `.sql.zst` | Mas rapido y mejor ratio; recomendado |
 
-Niveles de zstd: 1 = mas rapido, 3 = balance (default), 7 = mejor compresion, 9+ = maximo.
+Niveles zstd: 1=rapido, 3=balance (default), 7=mejor compresion.
+Niveles gzip: 1=rapido, 6=balance (default), 9=maximo.
 
-Niveles de gzip: 1 = mas rapido, 6 = balance (default), 9 = maximo.
-
-### Almacenamiento local
-
-```yaml
-storage:
-  kind: local
-  local:
-    path: /var/backups/mysql
-```
-
-La escritura es atomica: el archivo se escribe primero a un `.tmp` y luego se renombra. Un crash no deja archivos corruptos.
-
-### Almacenamiento HTTP (servidor propio)
-
-```yaml
-storage:
-  kind: http
-  http:
-    url: https://tu-servidor.com/api/backups/upload
-    field_name: backup_file          # nombre del campo multipart
-    timeout_seconds: 3600            # 1 hora; bases grandes necesitan timeouts generosos
-    headers:
-      X-Api-Key: "${STORAGE_API_KEY}"
-```
-
-El upload es streaming: los bytes fluyen de mysqldump al servidor sin cargarse en RAM.
-
-### Notificaciones
-
-El webhook recibe un POST con Content-Type `application/json`:
-
-```json
-{
-  "job_name": "mi-backup",
-  "status": "success",
-  "started_at": "2026-02-20T02:00:00Z",
-  "finished_at": "2026-02-20T02:04:31Z",
-  "duration_ms": 271000,
-  "bytes_written": 1048576000,
-  "destination": "mi-backup_20260220T020000Z.sql.zst",
-  "error": ""
-}
-```
-
-En caso de fallo, `status` es `"failure"` y `error` contiene el mensaje.
-
-### Reintentos
-
-```yaml
-retry:
-  max_attempts: 3      # intentos totales (1 = sin reintento)
-  delay_seconds: 30    # base del backoff: 30s, 60s, 120s, ...
-```
-
-El delay entre intentos crece exponencialmente: `base * 2^(intento-1)`, con un maximo de 10 minutos.
-
-### Schedule (cron)
-
-Se usa sintaxis estandar de 5 campos:
+### Nombre del archivo de backup
 
 ```
-┌───── minuto (0-59)
-│ ┌───── hora (0-23)
-│ │ ┌───── dia del mes (1-31)
-│ │ │ ┌───── mes (1-12)
-│ │ │ │ ┌───── dia de semana (0-6, domingo=0)
-│ │ │ │ │
-* * * * *
+{job}_{base_de_datos}_{timestamp}{ext_dump}{ext_compresion}
 ```
 
-Ejemplos:
-- `"0 2 * * *"` — todos los dias a las 02:00
-- `"0 4 * * 6"` — todos los sabados a las 04:00
-- `"0 */6 * * *"` — cada 6 horas
-- `""` — sin schedule (solo manual via `run`)
+Ejemplo: `full-backup_produccion_20260220T020000Z.sql.zst`
 
----
+### Comandos
 
-## Uso
+```bat
+# Validar la configuracion
+gobackups.exe validate -c all-dbs.yaml
 
-### Validar la configuracion
+# Listar jobs
+gobackups.exe list -c all-dbs.yaml
 
-```bash
-gobackups validate -c config/mi-config.yaml
+# Ejecutar un job especifico
+gobackups.exe run -c all-dbs.yaml --job full-backup
+
+# Ver que haria sin ejecutar
+gobackups.exe run -c all-dbs.yaml --dry-run
+
+# Modo daemon (cron)
+gobackups.exe daemon -c all-dbs.yaml
 ```
 
-Muestra un resumen de cada job si la configuracion es valida. Falla con mensaje de error si hay algun campo faltante o invalido.
-
-### Listar jobs
-
-```bash
-gobackups list -c config/mi-config.yaml
-```
-
-Imprime una tabla con nombre, base de datos, host, compresion, storage y schedule de cada job.
-
-### Ejecutar un backup ahora
-
-```bash
-# Ejecutar todos los jobs secuencialmente
-gobackups run -c config/mi-config.yaml
-
-# Ejecutar solo un job especifico
-gobackups run -c config/mi-config.yaml --job prod-db-local
-
-# Preview: ver que haria sin ejecutar
-gobackups run -c config/mi-config.yaml --dry-run
-```
-
-### Modo daemon (cron)
-
-```bash
-gobackups daemon -c config/mi-config.yaml
-```
-
-Ejecuta los jobs segun su `schedule`. Responde a SIGINT (Ctrl+C) y SIGTERM esperando que terminen los jobs en curso antes de salir.
-
-### Flags globales
+**Flags globales:**
 
 | Flag | Default | Descripcion |
 |------|---------|-------------|
-| `--log-level` | `info` | Nivel de log: `debug`, `info`, `warn`, `error` |
-| `--log-format` | `text` | Formato de log: `text`, `json` |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--log-format` | `text` | `text` o `json` |
+
+### Schedule (cron)
+
+Sintaxis estandar de 5 campos:
+
+```
+"0 2 * * *"    todos los dias a las 02:00
+"0 4 * * 6"    todos los sabados a las 04:00
+"0 */6 * * *"  cada 6 horas
+""             sin schedule (solo manual)
+```
+
+### Notificaciones webhook
+
+Payload JSON enviado al completar o fallar:
+
+```json
+{
+  "job_name": "full-backup",
+  "status": "success",
+  "started_at": "2026-02-20T02:00:00Z",
+  "finished_at": "2026-02-20T02:01:11Z",
+  "duration_ms": 71000,
+  "total_bytes": 267172115,
+  "databases": [
+    { "database": "produccion", "file": "full-backup_produccion_20260220T020000Z.sql.zst", "bytes": 267040244 },
+    { "database": "analytics",  "file": "full-backup_analytics_20260220T020000Z.sql.zst",  "bytes": 131871 },
+    { "database": "reportes",   "file": "full-backup_reportes_20260220T020000Z.sql.zst",   "bytes": 0, "error": "mysqldump exited with error: exit status 2" }
+  ]
+}
+```
+
+Si algun job falla, `status` es `"failure"` y cada base de datos con error incluye el campo `error`.
 
 ---
 
-## Nombre del archivo de backup
+## backupserver (servidor)
 
-El nombre generado sigue el patron:
+Recibe backups via HTTP multipart, los organiza por cliente y base de datos, y aplica retencion automatica.
+
+### Uso
+
+```bat
+backupserver.exe --api-key "clave-secreta" --keep-days 30 --dir D:\backups --port 8080
+```
+
+**Flags:**
+
+| Flag | Default | Descripcion |
+|------|---------|-------------|
+| `--port` | `8080` | Puerto de escucha |
+| `--dir` | `backups` | Directorio base |
+| `--api-key` | ` ` | Clave requerida en el header `X-Api-Key`. Vacio = sin autenticacion |
+| `--keep-days` | `30` | Dias de retencion por carpeta. 0 = sin limite |
+
+### Estructura de carpetas generada
 
 ```
-{job}_{timestamp}{ext_dump}{ext_compresion}
+backups/
+  cliente-a/
+    produccion/
+      full-backup_produccion_20260220T020000Z.sql.zst
+      full-backup_produccion_20260221T020000Z.sql.zst
+    analytics/
+      full-backup_analytics_20260220T020000Z.sql.zst
+  cliente-b/
+    main_db/
+      full-backup_main_db_20260220T020000Z.sql.zst
 ```
 
-Ejemplo: `prod-db-local_20260220T020000Z.sql.zst`
+### Endpoints
+
+| Endpoint | Descripcion |
+|----------|-------------|
+| `POST /upload` | Recibe un backup. Campos: `backup_file` (archivo), `client`, `database`, `job_name` |
+| `GET /health` | Devuelve `{"status":"ok"}` |
 
 ---
 
-## Preparacion de usuario MySQL para backups
+## webhookserver (pruebas locales)
 
-El usuario de backup necesita permisos minimos:
+Servidor de prueba para verificar notificaciones webhook. Imprime los resultados en consola de forma legible.
+
+```bat
+webhookserver.exe
+# Escucha en http://localhost:8081/webhook
+```
+
+---
+
+## Preparacion de usuario MySQL
 
 ```sql
-CREATE USER 'backup_user'@'%' IDENTIFIED BY 'contraseña_segura';
+CREATE USER 'backup_user'@'%' IDENTIFIED BY 'contrasena_segura';
 GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, PROCESS, EVENT
     ON *.* TO 'backup_user'@'%';
 FLUSH PRIVILEGES;
 ```
 
-Si el usuario no tiene `PROCESS`, agregar `--no-tablespaces` en `database.flags`:
+Si el usuario no tiene `PROCESS`:
 
 ```yaml
 database:
@@ -258,29 +269,17 @@ database:
 mysqldump stdout
       |
       v  goroutine: io.Copy(compressor, dumpReader)
-  compressor (gzip / zstd, streaming)
+  compressor (gzip/zstd, streaming)
       |
       v  io.Pipe (back-pressure automatico)
   pipeReader
       |
       v  storage.Store(ctx, filename, pipeReader)
   [local]  archivo.tmp -> os.Rename()
-  [http]   multipart.Writer -> HTTP request body
+  [http]   multipart (client+database+job_name) -> HTTP request body
 ```
 
-La contrapresion es automatica: si el destino es lento, el compresor frena, que frena a mysqldump. El uso de memoria es constante independientemente del tamaño de la base de datos.
-
----
-
-## Extensibilidad futura
-
-Para agregar un nuevo destino de almacenamiento (AWS S3, Azure Blob, SFTP, etc.):
-
-1. Crear `internal/storage/s3.go` implementando la interfaz `storage.Writer`
-2. Registrarlo en `internal/storage/storage.go` en la funcion `New()`
-3. Agregar la configuracion correspondiente en `internal/config/types.go`
-
-El pipeline no cambia.
+La contrapresion es automatica: si el destino es lento, el compresor frena, que frena a mysqldump. El uso de memoria es constante independientemente del tamano de la base de datos.
 
 ---
 
@@ -292,8 +291,6 @@ El pipeline no cambia.
 | `github.com/klauspost/compress` | v1.17.11 | Compresion zstd en streaming |
 | `github.com/robfig/cron/v3` | v3.0.1 | Parsing de cron y daemon scheduling |
 | `gopkg.in/yaml.v3` | v3.0.1 | Parsing de YAML |
-
-Compresion gzip usa la libreria estandar de Go (`compress/gzip`).
 
 ---
 
