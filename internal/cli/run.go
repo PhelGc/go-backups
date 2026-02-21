@@ -56,9 +56,10 @@ Use --dry-run to preview actions without executing mysqldump.`,
 				if dryRun {
 					logger.Info("dry run: would execute backup",
 						"job", job.Name,
+						"client", job.Client,
 						"db_host", job.Database.Host,
 						"db_port", job.Database.Port,
-						"db_name", job.Database.Database,
+						"databases", job.Database.DatabaseList(),
 						"compression", job.Compression.Kind,
 						"storage", job.Storage.Kind,
 					)
