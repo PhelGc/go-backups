@@ -47,21 +47,24 @@ func (p *Pipeline) Run(ctx context.Context) (bytesWritten int64, filename string
 
 	compressErrCh := make(chan error, 1)
 	go func() {
-		defer dumpReader.Close()
-
 		cw, err := p.compressor.Wrap(pw)
 		if err != nil {
+			dumpReader.Close()
 			pw.CloseWithError(fmt.Errorf("init compressor: %w", err))
 			compressErrCh <- err
 			return
 		}
 
 		_, copyErr := io.Copy(cw, dumpReader)
-		closeErr := cw.Close()
+		closeCompErr := cw.Close()
+		closeDumpErr := dumpReader.Close() // captura el exit code de mysqldump
 
 		combined := copyErr
 		if combined == nil {
-			combined = closeErr
+			combined = closeCompErr
+		}
+		if combined == nil {
+			combined = closeDumpErr
 		}
 		pw.CloseWithError(combined)
 		compressErrCh <- combined
